@@ -148,6 +148,26 @@ function App() {
 
   return (
     <main className="wordle-app">
+      <div className="start-overlay">
+        <section
+          className="start-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="start-dialog-title"
+        >
+          <p className="dialog-eyebrow">WORDLE V WORDLE</p>
+          <h2 id="start-dialog-title">How would you like to play?</h2>
+          <div className="dialog-actions">
+            <button className="dialog-button dialog-button-primary" type="button">
+              Join a game
+            </button>
+            <button className="dialog-button" type="button">
+              Host a game
+            </button>
+          </div>
+        </section>
+      </div>
+
       <header className="topbar">
         <h1>Wordle v Wordle</h1>
       </header>
