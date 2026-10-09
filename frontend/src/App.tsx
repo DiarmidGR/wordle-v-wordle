@@ -1,10 +1,10 @@
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import "./App.css";
 
 const WORD_LENGTH = 5;
 const MAX_GUESSES = 6;
-const ANSWER = "CRANE";
+const API_BASE = "/api";
 
 const KEY_ROWS = [
   ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
@@ -20,42 +20,96 @@ type Guess = {
   statuses: TileStatus[];
 };
 
-function evaluateGuess(guess: string, answer: string): TileStatus[] {
-  const result: TileStatus[] = Array(WORD_LENGTH).fill("absent");
-  const remaining = answer.split("");
+type GameState = {
+  code: string;
+  playerId: string;
+  role: "host" | "guest";
+  players: number;
+  maxPlayers: number;
+  guesses: Guess[];
+  guessesRemaining: number;
+  status: GameStatus;
+  answer?: string;
+};
 
-  // First pass: identify letters in the correct position.
-  for (let i = 0; i < WORD_LENGTH; i++) {
-    if (guess[i] === answer[i]) {
-      result[i] = "correct";
-      remaining[i] = "";
-    }
-  }
+async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, options);
+  const result = (await response.json()) as T & { error?: string };
 
-  // Second pass: identify letters in the wrong position.
-  for (let i = 0; i < WORD_LENGTH; i++) {
-    if (result[i] === "correct") continue;
-
-    const index = remaining.indexOf(guess[i]);
-
-    if (index !== -1) {
-      result[i] = "present";
-      remaining[index] = "";
-    }
+  if (!response.ok) {
+    throw new Error(result.error || "The request could not be completed");
   }
 
   return result;
 }
 
 function App() {
-  const [guesses, setGuesses] = useState<Guess[]>([]);
+  const [game, setGame] = useState<GameState | null>(null);
   const [currentGuess, setCurrentGuess] = useState("");
-  const [gameStatus, setGameStatus] = useState<GameStatus>("playing");
+  const [dialogMode, setDialogMode] = useState<"menu" | "join">("menu");
+  const [joinCode, setJoinCode] = useState("");
+  const [dialogMessage, setDialogMessage] = useState("");
   const [message, setMessage] = useState("");
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isSubmittingGuess, setIsSubmittingGuess] = useState(false);
+  const guesses = game?.guesses ?? [];
+  const gameStatus = game?.status ?? "playing";
+  const gameCode = game?.code;
+  const playerId = game?.playerId;
+  const players = game?.players;
+  const maxPlayers = game?.maxPlayers;
+
+  async function hostGame() {
+    setIsConnecting(true);
+    setDialogMessage("");
+
+    try {
+      const newGame = await apiRequest<GameState>("/games", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      setGame(newGame);
+      setCurrentGuess("");
+      setMessage("");
+    } catch (error) {
+      setDialogMessage(error instanceof Error ? error.message : "Could not host a game");
+    } finally {
+      setIsConnecting(false);
+    }
+  }
+
+  async function joinGame(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const code = joinCode.trim();
+
+    if (!/^\d{4}$/.test(code)) {
+      setDialogMessage("Enter a four-digit room code");
+      return;
+    }
+
+    setIsConnecting(true);
+    setDialogMessage("");
+
+    try {
+      const joinedGame = await apiRequest<GameState>(`/games/${code}/join`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      setGame(joinedGame);
+      setCurrentGuess("");
+      setMessage("");
+    } catch (error) {
+      setDialogMessage(error instanceof Error ? error.message : "Could not join that game");
+    } finally {
+      setIsConnecting(false);
+    }
+  }
 
   const handleKey = useCallback(
     (key: string) => {
-      if (gameStatus !== "playing") return;
+      if (!game || game.status !== "playing" || isSubmittingGuess) return;
 
       if (key === "BACKSPACE" || key === "BACKSPACE_ICON") {
         setCurrentGuess((guess) => guess.slice(0, -1));
@@ -69,23 +123,27 @@ function App() {
           return;
         }
 
-        const statuses = evaluateGuess(currentGuess, ANSWER);
-        const nextGuesses = [
-          ...guesses,
-          { word: currentGuess, statuses },
-        ];
-
-        setGuesses(nextGuesses);
-        setCurrentGuess("");
-        setMessage("");
-
-        if (currentGuess === ANSWER) {
-          setGameStatus("won");
-          setMessage("Excellent!");
-        } else if (nextGuesses.length === MAX_GUESSES) {
-          setGameStatus("lost");
-          setMessage(`The word was ${ANSWER}`);
-        }
+        setIsSubmittingGuess(true);
+        apiRequest<GameState>(`/games/${game.code}/guesses`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playerId: game.playerId, guess: currentGuess }),
+        })
+          .then((updatedGame) => {
+            setGame(updatedGame);
+            setCurrentGuess("");
+            setMessage(
+              updatedGame.status === "won"
+                ? "Excellent!"
+                : updatedGame.status === "lost"
+                  ? `The word was ${updatedGame.answer}`
+                  : "",
+            );
+          })
+          .catch((error: unknown) => {
+            setMessage(error instanceof Error ? error.message : "Could not submit guess");
+          })
+          .finally(() => setIsSubmittingGuess(false));
 
         return;
       }
@@ -95,13 +153,14 @@ function App() {
         setMessage("");
       }
     },
-    [currentGuess, gameStatus, guesses],
+    [currentGuess, game, isSubmittingGuess],
   );
 
   // Support the physical keyboard as well as the on-screen keyboard.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.target instanceof HTMLInputElement) return;
 
       if (event.key === "Enter") {
         event.preventDefault();
@@ -118,11 +177,46 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleKey]);
 
-  function restartGame() {
-    setGuesses([]);
-    setCurrentGuess("");
-    setGameStatus("playing");
-    setMessage("");
+  useEffect(() => {
+    if (!gameCode || !playerId || players === undefined || maxPlayers === undefined) return;
+    if (players >= maxPlayers) return;
+
+    let cancelled = false;
+    const refreshGame = async () => {
+      try {
+        const latestGame = await apiRequest<GameState>(
+          `/games/${gameCode}?playerId=${encodeURIComponent(playerId)}`,
+        );
+        if (!cancelled) setGame(latestGame);
+      } catch (error) {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Could not refresh game");
+        }
+      }
+    };
+
+    const interval = window.setInterval(refreshGame, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [gameCode, playerId, players, maxPlayers]);
+
+  async function restartGame() {
+    if (!game) return;
+
+    try {
+      const restartedGame = await apiRequest<GameState>(`/games/${game.code}/restart`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId: game.playerId }),
+      });
+      setGame(restartedGame);
+      setCurrentGuess("");
+      setMessage("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not restart game");
+    }
   }
 
   // Keep the most informative status for each keyboard letter.
@@ -148,7 +242,7 @@ function App() {
 
   return (
     <main className="wordle-app">
-      <div className="start-overlay">
+      {!game && <div className="start-overlay">
         <section
           className="start-dialog"
           role="dialog"
@@ -156,20 +250,84 @@ function App() {
           aria-labelledby="start-dialog-title"
         >
           <p className="dialog-eyebrow">WORDLE V WORDLE</p>
-          <h2 id="start-dialog-title">How would you like to play?</h2>
-          <div className="dialog-actions">
-            <button className="dialog-button dialog-button-primary" type="button">
-              Join a game
-            </button>
-            <button className="dialog-button" type="button">
-              Host a game
-            </button>
-          </div>
+          {dialogMode === "menu" ? (
+            <>
+              <h2 id="start-dialog-title">How would you like to play?</h2>
+              <div className="dialog-actions">
+                <button
+                  className="dialog-button dialog-button-primary"
+                  type="button"
+                  onClick={() => {
+                    setDialogMode("join");
+                    setDialogMessage("");
+                  }}
+                >
+                  Join a game
+                </button>
+                <button
+                  className="dialog-button"
+                  type="button"
+                  onClick={hostGame}
+                  disabled={isConnecting}
+                >
+                  {isConnecting ? "Creating room..." : "Host a game"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h2 id="start-dialog-title">Join a game</h2>
+              <form className="join-form" onSubmit={joinGame}>
+                <label htmlFor="join-code">Four-digit room code</label>
+                <input
+                  id="join-code"
+                  autoFocus
+                  autoComplete="one-time-code"
+                  inputMode="numeric"
+                  pattern="[0-9]{4}"
+                  maxLength={4}
+                  placeholder="0000"
+                  value={joinCode}
+                  onChange={(event) => {
+                    setJoinCode(event.target.value.replace(/\D/g, "").slice(0, 4));
+                    setDialogMessage("");
+                  }}
+                />
+                <div className="dialog-actions">
+                  <button
+                    className="dialog-button dialog-button-primary"
+                    type="submit"
+                    disabled={isConnecting}
+                  >
+                    {isConnecting ? "Joining..." : "Join room"}
+                  </button>
+                  <button
+                    className="dialog-button"
+                    type="button"
+                    onClick={() => {
+                      setDialogMode("menu");
+                      setDialogMessage("");
+                    }}
+                    disabled={isConnecting}
+                  >
+                    Back
+                  </button>
+                </div>
+              </form>
+            </>
+          )}
+          {dialogMessage && <p className="dialog-error" role="alert">{dialogMessage}</p>}
         </section>
-      </div>
+      </div>}
 
       <header className="topbar">
         <h1>Wordle v Wordle</h1>
+        {game && (
+          <div className="room-status" aria-live="polite">
+            <span>ROOM {game.code}</span>
+            <span>{game.players < game.maxPlayers ? "Waiting for player" : "2 players"}</span>
+          </div>
+        )}
       </header>
 
       <section className="game-area" aria-label="Word guessing game">
