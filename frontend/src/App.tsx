@@ -1,5 +1,6 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { SkewLoader } from "react-spinners";
 import "./App.css";
 
 const WORD_LENGTH = 5;
@@ -324,8 +325,10 @@ function App() {
         <h1>Wordle v Wordle</h1>
         {game && (
           <div className="room-status" aria-live="polite">
+            
             <span>ROOM {game.code}</span>
             <span>{game.players < game.maxPlayers ? "Waiting for player" : "2 players"}</span>
+            {game.players < game.maxPlayers && <SkewLoader color="#68a261" size = {9} />}
           </div>
         )}
       </header>
